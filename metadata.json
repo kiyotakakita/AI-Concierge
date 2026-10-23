@@ -1,0 +1,6 @@
+{
+  "name": "AI Concierge Portal",
+  "description": "ユーザーの関心とブックマークから最適なニュースを厳選推薦・3行要約するAIコンシェルジュポータル",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
