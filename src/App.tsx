@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from 'react';
 
-// 型定義
 interface FeedItem {
   title: string;
   link: string;
-  pubDate: string;
   source: string;
 }
 
@@ -19,7 +17,6 @@ interface Bookmark {
   id: string;
   title: string;
   url: string;
-  memo: string;
   createdAt: string;
 }
 
@@ -29,7 +26,7 @@ export default function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [interests, setInterests] = useState<string>(() => {
-    return localStorage.getItem('user_interests') || 'AI, プログラミング, ガジェット, 最新テクノロジー';
+    return localStorage.getItem('user_interests') || 'AI, Web開発, ガジェット, 最新テクノロジー';
   });
 
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => {
@@ -43,12 +40,10 @@ export default function App() {
   const [newMemoTitle, setNewMemoTitle] = useState('');
   const [newMemoUrl, setNewMemoUrl] = useState('');
 
-  // ブックマーク保存
   useEffect(() => {
     localStorage.setItem('my_bookmarks', JSON.stringify(bookmarks));
   }, [bookmarks]);
 
-  // 設定保存
   const handleSaveSettings = (key: string, userInterests: string) => {
     setApiKey(key);
     setInterests(userInterests);
@@ -58,7 +53,6 @@ export default function App() {
     alert('設定を保存しました！');
   };
 
-  // ニュース取得＆AI分析のメイン処理
   const handleAnalyze = async () => {
     if (!apiKey) {
       alert('Gemini APIキーが設定されていません。右上の「⚙️ 設定」から登録してください。');
@@ -67,26 +61,27 @@ export default function App() {
     }
 
     setLoading(true);
-    setStatusMessage('最新ニュースを取得中...');
+    setStatusMessage('最新技術ニュースを取得中...');
 
     try {
-      // 1. 無料のRSSプロキシ（rss2json）でIT人気ニュースを取得
-      const rssUrl = encodeURIComponent('https://b.hatena.ne.jp/hotentry/it.rss');
-      const feedRes = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${rssUrl}`);
-      
-      if (!feedRes.ok) throw new Error('ニュースの取得に失敗しました');
-      const feedData = await feedRes.json();
-      
-      const articles: FeedItem[] = (feedData.items || []).slice(0, 15).map((item: any) => ({
-        title: item.title,
-        link: item.link,
-        pubDate: item.pubDate,
-        source: 'テクノロジー速報'
-      }));
+      // 1. Qiita公式APIから最新の人気記事を取得（CORSブロックなし・超安定）
+      let articles: FeedItem[] = [];
+      try {
+        const res = await fetch('https://qiita.com/api/v2/items?page=1&per_page=15');
+        if (!res.ok) throw new Error('Qiita APIエラー');
+        const data = await res.json();
+        articles = data.map((item: any) => ({
+          title: item.title,
+          link: item.url,
+          source: 'Qiita Trend'
+        }));
+      } catch (e) {
+        throw new Error('ニュースの取得に失敗しました。電波環境を確認してください。');
+      }
 
       setStatusMessage('AIコンシェルジュがあなた向けに選定中...');
 
-      // 2. Gemini API を直接呼び出し
+      // 2. Gemini API を呼び出し
       const bookmarkSummaries = bookmarks.slice(0, 5).map(b => b.title).join(', ');
       const articlesText = articles.map((a, i) => `[${i + 1}] タイトル: ${a.title}\nURL: ${a.link}`).join('\n\n');
 
@@ -114,20 +109,25 @@ ${articlesText}
 ]
 `;
 
-      // Gemini 2.5 Flash / 1.5 Flash 呼び出し
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-      const aiRes = await fetch(geminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+      
+      let aiRes;
+      try {
+        aiRes = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
+      } catch (netErr: any) {
+        throw new Error(`Gemini通信エラー: Googleへの接続が遮断されました (${netErr.message})`);
+      }
 
       if (!aiRes.ok) {
-        const errorDetail = await aiRes.text();
-        throw new Error(`Geminiエラー (${aiRes.status}): ${errorDetail}`);
+        const errText = await aiRes.text();
+        throw new Error(`Geminiエラー (${aiRes.status}): ${errText}`);
       }
 
       const aiData = await aiRes.json();
@@ -135,25 +135,22 @@ ${articlesText}
       
       if (!outputText) throw new Error('AIから応答が得られませんでした');
 
-      // JSONのパース
       const parsed: RecommendedArticle[] = JSON.parse(outputText.replace(/```json/g, '').replace(/```/g, '').trim());
       setRecommendations(parsed);
       setStatusMessage('');
     } catch (err: any) {
-      alert(`エラーが発生しました:\n${err.message || err}`);
+      alert(`エラー:\n${err.message || err}`);
       setStatusMessage('');
     } finally {
       setLoading(false);
     }
   };
 
-  // ブックマーク追加
-  const addBookmark = (title: string, url: string, memo: string = '') => {
+  const addBookmark = (title: string, url: string) => {
     const item: Bookmark = {
       id: Date.now().toString(),
       title,
       url,
-      memo,
       createdAt: new Date().toLocaleDateString('ja-JP')
     };
     setBookmarks([item, ...bookmarks]);
@@ -170,7 +167,7 @@ ${articlesText}
       {/* ヘッダー */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
-          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0, color: '#0f172a' }}>📰 AI News Concierge</h1>
+          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0, color: '#0f172a' }}>📰 AIニュースコンシェルジュ</h1>
           <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>あなた専用の厳選ニュースポータル</p>
         </div>
         <button
@@ -201,7 +198,7 @@ ${articlesText}
               type="text"
               defaultValue={interests}
               id="interestsInput"
-              placeholder="例: React, AI, 投資, 筋トレ"
+              placeholder="例: AI, TypeScript, ガジェット, 投資"
               style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
             />
           </div>
@@ -226,13 +223,13 @@ ${articlesText}
           style={{
             width: '100%',
             padding: '14px',
-            backgroundColor: loading ? '#94a3b8' : '#3b82f6',
+            backgroundColor: loading ? '#94a3b8' : '#2563eb',
             color: '#fff',
             border: 'none',
             borderRadius: '12px',
             fontSize: '16px',
             fontWeight: 'bold',
-            boxShadow: '0 4px 10px rgba(59, 130, 246, 0.3)',
+            boxShadow: '0 4px 10px rgba(37, 99, 235, 0.3)',
             cursor: loading ? 'not-allowed' : 'pointer'
           }}
         >
@@ -243,7 +240,7 @@ ${articlesText}
       {/* おすすめ記事リスト */}
       {recommendations.length > 0 && (
         <section style={{ marginBottom: '30px' }}>
-          <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0' }}>
             🎯 コンシェルジュのおすすめ（3選）
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -274,7 +271,7 @@ ${articlesText}
                     記事を読む ↗
                   </a>
                   <button
-                    onClick={() => addBookmark(item.title, item.link, item.summary)}
+                    onClick={() => addBookmark(item.title, item.link)}
                     style={{ flex: 1, padding: '8px', backgroundColor: '#e0f2fe', color: '#0369a1', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
                   >
                     ⭐ ブックマーク
