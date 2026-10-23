@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const dynamic = 'force-dynamic';
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header.tsx';
 import { ConciergeHome } from './components/ConciergeHome.tsx';
@@ -110,8 +108,9 @@ export default function App() {
           setFeedItems(itemsData.items || []);
         }
       } else {
-        addToast('error', '再分析のリクエストに失敗しました');
-      }
+  // ↓ ここを書き換える（エラーの番号や理由をトーストに出す）
+  addToast('error', `失敗 (${res.status}): ${res.statusText}`);
+}
     } catch (err) {
       addToast('error', 'ネットワークエラーが発生しました');
     } finally {
