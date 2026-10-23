@@ -1,352 +1,354 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+import React, { useState, useEffect } from 'react';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Header } from './components/Header.tsx';
-import { ConciergeHome } from './components/ConciergeHome.tsx';
-import { BookmarkView } from './components/BookmarkView.tsx';
-import { FeedsView } from './components/FeedsView.tsx';
-import { RawStreamView } from './components/RawStreamView.tsx';
-import { Toast, ToastMessage } from './components/Toast.tsx';
-import {
-  Bookmark,
-  ConciergeGreeting,
-  FeedItem,
-  FeedSource,
-  PortalSummaryResponse,
-  Recommendation,
-} from './types/index.ts';
+// 型定義
+interface FeedItem {
+  title: string;
+  link: string;
+  pubDate: string;
+  source: string;
+}
+
+interface RecommendedArticle {
+  title: string;
+  link: string;
+  reason: string;
+  summary: string;
+}
+
+interface Bookmark {
+  id: string;
+  title: string;
+  url: string;
+  memo: string;
+  createdAt: string;
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'concierge' | 'bookmarks' | 'feeds' | 'stream'>('concierge');
+  const [apiKey, setApiKey] = useState<string>(() => {
+    return localStorage.getItem('gemini_api_key') || import.meta.env.VITE_GEMINI_API_KEY || '';
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const [interests, setInterests] = useState<string>(() => {
+    return localStorage.getItem('user_interests') || 'AI, プログラミング, ガジェット, 最新テクノロジー';
+  });
 
-  // State
-  const [greeting, setGreeting] = useState<ConciergeGreeting | null>(null);
-  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
-  const [feeds, setFeeds] = useState<FeedSource[]>([]);
-  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => {
+    const saved = localStorage.getItem('my_bookmarks');
+    return saved ? JSON.parse(saved) : [];
+  });
 
-  const [isLoadingSummary, setIsLoadingSummary] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [recommendations, setRecommendations] = useState<RecommendedArticle[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [newMemoTitle, setNewMemoTitle] = useState('');
+  const [newMemoUrl, setNewMemoUrl] = useState('');
 
-  // Toast helper
-  const addToast = (type: 'success' | 'error' | 'info', text: string) => {
-    const id = Date.now().toString() + Math.random().toString(36).substring(2, 5);
-    setToasts((prev) => [...prev, { id, type, text }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  };
-
-  const removeToast = (id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  // Initial Data Fetch
-  const loadPortalData = useCallback(async () => {
-    setIsLoadingSummary(true);
-    try {
-      // 1. Fetch portal summary
-      const summaryRes = await fetch('/api/portal/summary');
-      if (summaryRes.ok) {
-        const summaryData: PortalSummaryResponse = await summaryRes.json();
-        setGreeting(summaryData.greeting);
-        setRecommendations(summaryData.recommendations);
-      }
-
-      // 2. Fetch bookmarks
-      const bmRes = await fetch('/api/bookmarks');
-      if (bmRes.ok) {
-        const bmData = await bmRes.json();
-        setBookmarks(bmData.bookmarks || []);
-      }
-
-      // 3. Fetch feeds
-      const feedsRes = await fetch('/api/feeds');
-      if (feedsRes.ok) {
-        const feedsData = await feedsRes.json();
-        setFeeds(feedsData || []);
-      }
-
-      // 4. Fetch raw feed items
-      const itemsRes = await fetch('/api/feeds/raw-items');
-      if (itemsRes.ok) {
-        const itemsData = await itemsRes.json();
-        setFeedItems(itemsData.items || []);
-      }
-    } catch (err) {
-      console.error('Error loading initial portal data:', err);
-      addToast('error', 'データの取得に失敗しました');
-    } finally {
-      setIsLoadingSummary(false);
-    }
-  }, []);
-
+  // ブックマーク保存
   useEffect(() => {
-    loadPortalData();
-  }, [loadPortalData]);
+    localStorage.setItem('my_bookmarks', JSON.stringify(bookmarks));
+  }, [bookmarks]);
 
-  // Refresh AI recommendations
-  const handleRefreshRecommendations = async () => {
-    setIsRefreshing(true);
+  // 設定保存
+  const handleSaveSettings = (key: string, userInterests: string) => {
+    setApiKey(key);
+    setInterests(userInterests);
+    localStorage.setItem('gemini_api_key', key);
+    localStorage.setItem('user_interests', userInterests);
+    setShowSettings(false);
+    alert('設定を保存しました！');
+  };
+
+  // ニュース取得＆AI分析のメイン処理
+  const handleAnalyze = async () => {
+    if (!apiKey) {
+      alert('Gemini APIキーが設定されていません。右上の「⚙️ 設定」から登録してください。');
+      setShowSettings(true);
+      return;
+    }
+
+    setLoading(true);
+    setStatusMessage('最新ニュースを取得中...');
+
     try {
-      const res = await fetch('/api/portal/refresh-recommendations', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        setGreeting(data.greeting);
-        setRecommendations(data.recommendations);
-        addToast('success', 'AIコンシェルジュが最新の関心とフィードを再分析しました');
+      // 1. 無料のRSSプロキシ（rss2json）でIT人気ニュースを取得
+      const rssUrl = encodeURIComponent('https://b.hatena.ne.jp/hotentry/it.rss');
+      const feedRes = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${rssUrl}`);
+      
+      if (!feedRes.ok) throw new Error('ニュースの取得に失敗しました');
+      const feedData = await feedRes.json();
+      
+      const articles: FeedItem[] = (feedData.items || []).slice(0, 15).map((item: any) => ({
+        title: item.title,
+        link: item.link,
+        pubDate: item.pubDate,
+        source: 'テクノロジー速報'
+      }));
 
-        // Also refresh raw items
-        const itemsRes = await fetch('/api/feeds/raw-items?force=true');
-        if (itemsRes.ok) {
-          const itemsData = await itemsRes.json();
-          setFeedItems(itemsData.items || []);
-        }
-      } else {
-  // ↓ ここを書き換える（エラーの番号や理由をトーストに出す）
-  addToast('error', `失敗 (${res.status}): ${res.statusText}`);
-}
-    } catch (err) {
-      addToast('error', 'ネットワークエラーが発生しました');
+      setStatusMessage('AIコンシェルジュがあなた向けに選定中...');
+
+      // 2. Gemini API を直接呼び出し
+      const bookmarkSummaries = bookmarks.slice(0, 5).map(b => b.title).join(', ');
+      const articlesText = articles.map((a, i) => `[${i + 1}] タイトル: ${a.title}\nURL: ${a.link}`).join('\n\n');
+
+      const prompt = `
+あなたは専属のAIニュースコンシェルジュです。
+以下の【ユーザーの関心】と【最近のブックマーク】を参考に、【最新ニュース一覧】の中からユーザーに最もおすすめな記事を「3件」厳選してください。
+
+【ユーザーの関心】
+${interests}
+
+【最近保存したブックマーク】
+${bookmarkSummaries || '特になし'}
+
+【最新ニュース一覧】
+${articlesText}
+
+必ず以下のJSON配列フォーマットのみを出力してください。Markdownのコードブロック（\`\`\`json等）も含めず、純粋なJSONテキストだけを返してください。
+[
+  {
+    "title": "記事タイトル",
+    "link": "記事のURL",
+    "reason": "なぜあなたにおすすめなのかの理由（親しみやすい口調で1〜2文）",
+    "summary": "記事の要約（ポイントをわかりやすく2〜3行で）"
+  }
+]
+`;
+
+      // Gemini 2.5 Flash / 1.5 Flash 呼び出し
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      const aiRes = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
+
+      if (!aiRes.ok) {
+        const errorDetail = await aiRes.text();
+        throw new Error(`Geminiエラー (${aiRes.status}): ${errorDetail}`);
+      }
+
+      const aiData = await aiRes.json();
+      const outputText = aiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (!outputText) throw new Error('AIから応答が得られませんでした');
+
+      // JSONのパース
+      const parsed: RecommendedArticle[] = JSON.parse(outputText.replace(/```json/g, '').replace(/```/g, '').trim());
+      setRecommendations(parsed);
+      setStatusMessage('');
+    } catch (err: any) {
+      alert(`エラーが発生しました:\n${err.message || err}`);
+      setStatusMessage('');
     } finally {
-      setIsRefreshing(false);
+      setLoading(false);
     }
   };
 
-  // Save Bookmark from Recommendation or Stream
-  const handleSaveBookmark = async (article: {
-    url: string;
-    title: string;
-    sourceName: string;
-    tags: string[];
-  }) => {
-    try {
-      const res = await fetch('/api/bookmarks/quick', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(article),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setBookmarks((prev) => [data.bookmark, ...prev]);
-
-        // Update recommendation saved state
-        setRecommendations((prev) =>
-          prev.map((r) => (r.articleUrl === article.url ? { ...r, savedAsBookmark: true } : r))
-        );
-
-        addToast('success', `「${article.title.slice(0, 20)}...」をブックマークに保存しました`);
-      }
-    } catch (err) {
-      addToast('error', 'ブックマークの保存に失敗しました');
-    }
+  // ブックマーク追加
+  const addBookmark = (title: string, url: string, memo: string = '') => {
+    const item: Bookmark = {
+      id: Date.now().toString(),
+      title,
+      url,
+      memo,
+      createdAt: new Date().toLocaleDateString('ja-JP')
+    };
+    setBookmarks([item, ...bookmarks]);
+    alert('ブックマークに追加しました！');
   };
 
-  // Dismiss Recommendation
-  const handleDismissRecommendation = async (articleUrl: string) => {
-    try {
-      await fetch('/api/recommendations/dismiss', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articleUrl }),
-      });
-
-      setRecommendations((prev) => prev.filter((r) => r.articleUrl !== articleUrl));
-      addToast('info', '推薦記事を非表示にしました');
-    } catch (err) {
-      addToast('error', '操作に失敗しました');
-    }
-  };
-
-  // Quick Add
-  const handleQuickAdd = async (url: string, note: string, tags: string[]) => {
-    try {
-      const res = await fetch('/api/bookmarks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, note, tags }),
-      });
-
-      if (res.ok) {
-        const newBm = await res.json();
-        setBookmarks((prev) => [newBm, ...prev]);
-        addToast('success', 'クイック保存しました。AIの次期レコメンドに反映されます');
-      }
-    } catch (err) {
-      addToast('error', '保存に失敗しました');
-    }
-  };
-
-  // Add Bookmark from Modal
-  const handleAddBookmark = async (data: { url: string; title: string; note: string; tags: string[] }) => {
-    const res = await fetch('/api/bookmarks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-
-    if (res.ok) {
-      const newBm = await res.json();
-      setBookmarks((prev) => [newBm, ...prev]);
-      addToast('success', 'ブックマークを登録しました');
-    } else {
-      addToast('error', '登録に失敗しました');
-    }
-  };
-
-  // Update Bookmark
-  const handleUpdateBookmark = async (
-    id: string,
-    data: { title: string; note: string; tags: string[] }
-  ) => {
-    const res = await fetch(`/api/bookmarks/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-
-    if (res.ok) {
-      const updated = await res.json();
-      setBookmarks((prev) => prev.map((b) => (b.id === id ? updated : b)));
-      addToast('success', 'ブックマークを更新しました');
-    } else {
-      addToast('error', '更新に失敗しました');
-    }
-  };
-
-  // Delete Bookmark
-  const handleDeleteBookmark = async (id: string) => {
-    const res = await fetch(`/api/bookmarks/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      setBookmarks((prev) => prev.filter((b) => b.id !== id));
-      addToast('info', 'ブックマークを削除しました');
-    } else {
-      addToast('error', '削除に失敗しました');
-    }
-  };
-
-  // Toggle Feed
-  const handleToggleFeed = async (id: string, enabled: boolean) => {
-    const res = await fetch(`/api/feeds/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-
-    if (res.ok) {
-      setFeeds((prev) => prev.map((f) => (f.id === id ? { ...f, enabled } : f)));
-      addToast('success', `フィードを${enabled ? '有効' : '無効'}にしました`);
-    } else {
-      addToast('error', '設定変更に失敗しました');
-    }
-  };
-
-  // Add Feed
-  const handleAddFeed = async (data: {
-    name: string;
-    url: string;
-    category: FeedSource['category'];
-    description?: string;
-  }) => {
-    const res = await fetch('/api/feeds', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-
-    if (res.ok) {
-      const newFeed = await res.json();
-      setFeeds((prev) => [...prev, newFeed]);
-      addToast('success', `フィード「${newFeed.name}」を追加しました`);
-      // Reload raw items
-      const itemsRes = await fetch('/api/feeds/raw-items?force=true');
-      if (itemsRes.ok) {
-        const itemsData = await itemsRes.json();
-        setFeedItems(itemsData.items || []);
-      }
-    } else {
-      const err = await res.json();
-      throw new Error(err.error || 'フィードの追加に失敗しました');
-    }
-  };
-
-  // Delete Feed
-  const handleDeleteFeed = async (id: string) => {
-    const res = await fetch(`/api/feeds/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      setFeeds((prev) => prev.filter((f) => f.id !== id));
-      addToast('info', 'フィードを削除しました');
-    } else {
-      addToast('error', 'フィードの削除に失敗しました');
-    }
+  const removeBookmark = (id: string) => {
+    setBookmarks(bookmarks.filter(b => b.id !== id));
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
-      {/* Navigation Header */}
-      <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        bookmarkCount={bookmarks.length}
-        feedCount={feeds.filter((f) => f.enabled).length}
-        isRefreshing={isRefreshing}
-        onRefresh={handleRefreshRecommendations}
-      />
+    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '16px', fontFamily: 'sans-serif', backgroundColor: '#f8fafc', minHeight: '100vh', color: '#1e293b' }}>
+      
+      {/* ヘッダー */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div>
+          <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0, color: '#0f172a' }}>📰 AI News Concierge</h1>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>あなた専用の厳選ニュースポータル</p>
+        </div>
+        <button
+          onClick={() => setShowSettings(!showSettings)}
+          style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', backgroundColor: '#fff', fontSize: '13px', cursor: 'pointer' }}
+        >
+          ⚙️ 設定
+        </button>
+      </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6">
-        {activeTab === 'concierge' && (
-          <ConciergeHome
-            greeting={greeting}
-            recommendations={recommendations}
-            feedItems={feedItems}
-            isLoading={isLoadingSummary}
-            onSaveBookmark={handleSaveBookmark}
-            onDismissRecommendation={handleDismissRecommendation}
-            onQuickAdd={handleQuickAdd}
-            onRefreshRecommendations={handleRefreshRecommendations}
-            onOpenFeedTab={() => setActiveTab('stream')}
-            onOpenBookmarksTab={() => setActiveTab('bookmarks')}
+      {/* 設定パネル */}
+      {showSettings && (
+        <div style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', marginBottom: '20px' }}>
+          <h3 style={{ margin: '0 0 10px 0', fontSize: '15px' }}>設定（端末に保存されます）</h3>
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>Gemini API Key:</label>
+            <input
+              type="password"
+              defaultValue={apiKey}
+              id="apiKeyInput"
+              placeholder="AIzaSy..."
+              style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
+            />
+          </div>
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>あなたの興味・関心ワード:</label>
+            <input
+              type="text"
+              defaultValue={interests}
+              id="interestsInput"
+              placeholder="例: React, AI, 投資, 筋トレ"
+              style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
+            />
+          </div>
+          <button
+            onClick={() => {
+              const k = (document.getElementById('apiKeyInput') as HTMLInputElement).value;
+              const i = (document.getElementById('interestsInput') as HTMLInputElement).value;
+              handleSaveSettings(k, i);
+            }}
+            style={{ width: '100%', padding: '10px', backgroundColor: '#2563eb', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            保存する
+          </button>
+        </div>
+      )}
+
+      {/* AIレコメンド実行ボタン */}
+      <div style={{ marginBottom: '24px' }}>
+        <button
+          onClick={handleAnalyze}
+          disabled={loading}
+          style={{
+            width: '100%',
+            padding: '14px',
+            backgroundColor: loading ? '#94a3b8' : '#3b82f6',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '12px',
+            fontSize: '16px',
+            fontWeight: 'bold',
+            boxShadow: '0 4px 10px rgba(59, 130, 246, 0.3)',
+            cursor: loading ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {loading ? '🤖 ' + statusMessage : '✨ 今日の厳選ニュースを分析・おすすめ'}
+        </button>
+      </div>
+
+      {/* おすすめ記事リスト */}
+      {recommendations.length > 0 && (
+        <section style={{ marginBottom: '30px' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            🎯 コンシェルジュのおすすめ（3選）
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            {recommendations.map((item, idx) => (
+              <div key={idx} style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+                <a href={item.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: '16px', fontWeight: 'bold', color: '#1d4ed8', textDecoration: 'none', display: 'block', marginBottom: '8px' }}>
+                  {item.title}
+                </a>
+                
+                {/* 推薦理由 */}
+                <div style={{ backgroundColor: '#eff6ff', padding: '8px 10px', borderRadius: '6px', fontSize: '13px', color: '#1e40af', marginBottom: '8px' }}>
+                  💡 <strong>おすすめ理由:</strong> {item.reason}
+                </div>
+
+                {/* 要約 */}
+                <p style={{ fontSize: '13px', color: '#475569', margin: '0 0 12px 0', lineHeight: '1.5' }}>
+                  📝 {item.summary}
+                </p>
+
+                {/* ボタン */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <a
+                    href={item.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ flex: 1, textAlign: 'center', padding: '8px', backgroundColor: '#f1f5f9', borderRadius: '6px', fontSize: '12px', color: '#334155', textDecoration: 'none', fontWeight: 'bold' }}
+                  >
+                    記事を読む ↗
+                  </a>
+                  <button
+                    onClick={() => addBookmark(item.title, item.link, item.summary)}
+                    style={{ flex: 1, padding: '8px', backgroundColor: '#e0f2fe', color: '#0369a1', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    ⭐ ブックマーク
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ブックマーク・メモ一覧 */}
+      <section>
+        <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0' }}>
+          📑 保存したブックマーク ({bookmarks.length})
+        </h2>
+
+        {/* 手動追加フォーム */}
+        <div style={{ backgroundColor: '#fff', padding: '12px', borderRadius: '10px', border: '1px solid #e2e8f0', marginBottom: '14px' }}>
+          <input
+            type="text"
+            placeholder="タイトルまたはメモ"
+            value={newMemoTitle}
+            onChange={(e) => setNewMemoTitle(e.target.value)}
+            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', marginBottom: '6px', boxSizing: 'border-box' }}
           />
-        )}
-
-        {activeTab === 'bookmarks' && (
-          <BookmarkView
-            bookmarks={bookmarks}
-            onAddBookmark={handleAddBookmark}
-            onUpdateBookmark={handleUpdateBookmark}
-            onDeleteBookmark={handleDeleteBookmark}
-            onTriggerAIRefresh={handleRefreshRecommendations}
+          <input
+            type="text"
+            placeholder="URL (任意)"
+            value={newMemoUrl}
+            onChange={(e) => setNewMemoUrl(e.target.value)}
+            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', marginBottom: '8px', boxSizing: 'border-box' }}
           />
-        )}
+          <button
+            onClick={() => {
+              if (!newMemoTitle) return;
+              addBookmark(newMemoTitle, newMemoUrl);
+              setNewMemoTitle('');
+              setNewMemoUrl('');
+            }}
+            style={{ width: '100%', padding: '8px', backgroundColor: '#0f172a', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}
+          >
+            ＋ メモを追加
+          </button>
+        </div>
 
-        {activeTab === 'stream' && (
-          <RawStreamView
-            feedItems={feedItems}
-            feeds={feeds}
-            onSaveBookmark={handleSaveBookmark}
-          />
+        {/* リスト表示 */}
+        {bookmarks.length === 0 ? (
+          <p style={{ fontSize: '13px', color: '#94a3b8', textAlign: 'center', margin: '20px 0' }}>まだ保存された記事はありません</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {bookmarks.map((bm) => (
+              <div key={bm.id} style={{ backgroundColor: '#fff', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ overflow: 'hidden', paddingRight: '8px' }}>
+                  {bm.url ? (
+                    <a href={bm.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '14px', fontWeight: 'bold', color: '#2563eb', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {bm.title}
+                    </a>
+                  ) : (
+                    <div style={{ fontSize: '14px', fontWeight: 'bold' }}>{bm.title}</div>
+                  )}
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>{bm.createdAt}</span>
+                </div>
+                <button
+                  onClick={() => removeBookmark(bm.id)}
+                  style={{ border: 'none', background: 'none', color: '#ef4444', fontSize: '12px', cursor: 'pointer', padding: '4px' }}
+                >
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
         )}
-
-        {activeTab === 'feeds' && (
-          <FeedsView
-            feeds={feeds}
-            onToggleFeed={handleToggleFeed}
-            onAddFeed={handleAddFeed}
-            onDeleteFeed={handleDeleteFeed}
-            onTriggerAIRefresh={handleRefreshRecommendations}
-          />
-        )}
-      </main>
-
-      {/* Toast notifications */}
-      <Toast toasts={toasts} onDismiss={removeToast} />
+      </section>
     </div>
   );
 }
