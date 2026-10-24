@@ -1,11 +1,5 @@
 import React, { useState, useEffect } from 'react';
 
-interface FeedItem {
-  title: string;
-  link: string;
-  source: string;
-}
-
 interface RecommendedArticle {
   title: string;
   link: string;
@@ -26,7 +20,7 @@ export default function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [interests, setInterests] = useState<string>(() => {
-    return localStorage.getItem('user_interests') || '料理, レシピ, グルメ';
+    return localStorage.getItem('user_interests') || '料理, 簡単レシピ, グルメ';
   });
 
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => {
@@ -36,7 +30,6 @@ export default function App() {
 
   const [recommendations, setRecommendations] = useState<RecommendedArticle[]>([]);
   const [loading, setLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
   const [newMemoTitle, setNewMemoTitle] = useState('');
   const [newMemoUrl, setNewMemoUrl] = useState('');
 
@@ -50,7 +43,7 @@ export default function App() {
     localStorage.setItem('gemini_api_key', key);
     localStorage.setItem('user_interests', userInterests);
     setShowSettings(false);
-    alert('設定を保存しました！');
+    alert('設定を保存しました！新しいテーマでおすすめを取得できます。');
   };
 
   const handleAnalyze = async () => {
@@ -61,75 +54,31 @@ export default function App() {
     }
 
     setLoading(true);
-    setStatusMessage(`「${interests}」の最新ニュースを検索中...`);
 
     try {
-      // 1. Googleニュースから「ユーザーの関心ワード」でリアルタイム検索
-      let articles: FeedItem[] = [];
-      const searchQuery = encodeURIComponent(interests.replace(/,/g, ' OR '));
-      const googleNewsUrl = `https://news.google.com/rss/search?q=${searchQuery}&hl=ja&gl=JP&ceid=JP:ja`;
-      
-      try {
-        const proxyRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(googleNewsUrl)}`);
-        const proxyData = await proxyRes.json();
-        
-        // XMLをパースして記事を取り出す
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(proxyData.contents, "text/xml");
-        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 15);
-
-        articles = items.map(item => ({
-          title: item.querySelector("title")?.textContent || "",
-          link: item.querySelector("link")?.textContent || "",
-          source: 'Googleニュース'
-        }));
-      } catch (e) {
-        console.warn('Googleニュースの取得に失敗、代替ニュースを取得します');
-      }
-
-      // もしGoogleニュースが取れなかった場合のフォールバック（Qiita）
-      if (articles.length === 0) {
-        const res = await fetch('https://qiita.com/api/v2/items?page=1&per_page=15');
-        const data = await res.json();
-        articles = data.map((item: any) => ({
-          title: item.title,
-          link: item.url,
-          source: '技術トレンド'
-        }));
-      }
-
-      setStatusMessage('AIコンシェルジュが厳選中...');
-
-      // 2. Gemini API を呼び出し
       const bookmarkSummaries = bookmarks.slice(0, 5).map(b => b.title).join(', ');
-      const articlesText = articles.map((a, i) => `[${i + 1}] タイトル: ${a.title}\nURL: ${a.link}`).join('\n\n');
 
+      // Gemini自身に、関心ワードに基づいた最新のニュース・トレンド記事をキュレーションさせる
       const prompt = `
-あなたは専属のAIニュースコンシェルジュです。
-以下の【ユーザーの関心ワード】と【最近のブックマーク】を参考に、【最新ニュース一覧】の中からユーザーに最もおすすめな記事を「3件」厳選してください。
+あなたはプロの専属ニュースコンシェルジュです。
+ユーザーの現在の関心テーマは【${interests}】です。
 
-【ユーザーの関心ワード】
-${interests}
-
-【最近保存したブックマーク】
-${bookmarkSummaries || '特になし'}
-
-【最新ニュース一覧】
-${articlesText}
+この関心テーマに完全に合致する、いま知っておくべき最新の注目ニュース、トレンド情報、話題の記事を「3件」厳選して紹介してください。
 
 必ず以下のJSON配列フォーマットのみを出力してください。Markdownのコードブロック（\`\`\`json等）も含めず、純粋なJSONテキストだけを返してください。
+検索クエリ用URLは「https://www.google.com/search?q=」の後ろに記事タイトルをURLエンコードしたものを入れてください。
+
 [
   {
-    "title": "記事タイトル",
-    "link": "記事のURL",
-    "reason": "なぜあなたにおすすめなのかの理由（親しみやすい口調で1〜2文）",
-    "summary": "記事の要約（ポイントをわかりやすく2〜3行で）"
+    "title": "記事やトピックの具体的な見出し",
+    "searchQuery": "検索用の短いキーワード",
+    "reason": "なぜいまあなたにおすすめなのかの理由（親しみやすい口調で1〜2文）",
+    "summary": "内容の要約・注目ポイント（わかりやすく2〜3行で）"
   }
 ]
 `;
 
-      // ユーザーの環境で動いたモデル（3.8など）に合わせて調整可能です
-      const modelName = 'gemini-2.5-flash'; 
+      const modelName = 'gemini-3.8-flash';
       const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       
       const aiRes = await fetch(geminiUrl, {
@@ -151,12 +100,19 @@ ${articlesText}
       
       if (!outputText) throw new Error('AIから応答が得られませんでした');
 
-      const parsed: RecommendedArticle[] = JSON.parse(outputText.replace(/```json/g, '').replace(/```/g, '').trim());
+      const rawParsed = JSON.parse(outputText.replace(/```json/g, '').replace(/```/g, '').trim());
+      
+      // Google検索リンクを生成
+      const parsed: RecommendedArticle[] = rawParsed.map((item: any) => ({
+        title: item.title,
+        link: item.link || `https://www.google.com/search?q=${encodeURIComponent(item.searchQuery || item.title)}`,
+        reason: item.reason,
+        summary: item.summary
+      }));
+
       setRecommendations(parsed);
-      setStatusMessage('');
     } catch (err: any) {
       alert(`エラー:\n${err.message || err}`);
-      setStatusMessage('');
     } finally {
       setLoading(false);
     }
@@ -184,7 +140,7 @@ ${articlesText}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
           <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0, color: '#0f172a' }}>📰 AIニュースコンシェルジュ</h1>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>設定ワード: {interests}</p>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>現在の関心: <strong>{interests}</strong></p>
         </div>
         <button
           onClick={() => setShowSettings(!showSettings)}
@@ -197,7 +153,7 @@ ${articlesText}
       {/* 設定パネル */}
       {showSettings && (
         <div style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', marginBottom: '20px' }}>
-          <h3 style={{ margin: '0 0 10px 0', fontSize: '15px' }}>設定（端末に保存されます）</h3>
+          <h3 style={{ margin: '0 0 10px 0', fontSize: '15px' }}>設定</h3>
           <div style={{ marginBottom: '12px' }}>
             <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>Gemini API Key:</label>
             <input
@@ -209,12 +165,12 @@ ${articlesText}
             />
           </div>
           <div style={{ marginBottom: '12px' }}>
-            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>あなたの興味・関心ワード:</label>
+            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>関心テーマ（自由に変更OK）:</label>
             <input
               type="text"
               defaultValue={interests}
               id="interestsInput"
-              placeholder="例: 料理, カフェ, サッカー, AI"
+              placeholder="例: 料理, 簡単レシピ, キャンプ, 投資"
               style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
             />
           </div>
@@ -249,7 +205,7 @@ ${articlesText}
             cursor: loading ? 'not-allowed' : 'pointer'
           }}
         >
-          {loading ? '🤖 ' + statusMessage : '✨ 今日の厳選ニュースを分析・おすすめ'}
+          {loading ? '🤖 コンシェルジュが選定中...' : `✨ 「${interests}」のおすすめ記事を分析`}
         </button>
       </div>
 
@@ -257,7 +213,7 @@ ${articlesText}
       {recommendations.length > 0 && (
         <section style={{ marginBottom: '30px' }}>
           <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0' }}>
-            🎯 「{interests}」のおすすめ（3選）
+            🎯 コンシェルジュの厳選（3選）
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {recommendations.map((item, idx) => (
@@ -281,7 +237,7 @@ ${articlesText}
                     rel="noopener noreferrer"
                     style={{ flex: 1, textAlign: 'center', padding: '8px', backgroundColor: '#f1f5f9', borderRadius: '6px', fontSize: '12px', color: '#334155', textDecoration: 'none', fontWeight: 'bold' }}
                   >
-                    記事を読む ↗
+                    記事を検索して読む ↗
                   </a>
                   <button
                     onClick={() => addBookmark(item.title, item.link)}
@@ -302,7 +258,6 @@ ${articlesText}
           📑 保存したブックマーク ({bookmarks.length})
         </h2>
 
-        {/* 手動追加フォーム */}
         <div style={{ backgroundColor: '#fff', padding: '12px', borderRadius: '10px', border: '1px solid #e2e8f0', marginBottom: '14px' }}>
           <input
             type="text"
@@ -331,7 +286,6 @@ ${articlesText}
           </button>
         </div>
 
-        {/* リスト表示 */}
         {bookmarks.length === 0 ? (
           <p style={{ fontSize: '13px', color: '#94a3b8', textAlign: 'center', margin: '20px 0' }}>まだ保存された記事はありません</p>
         ) : (
