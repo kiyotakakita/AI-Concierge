@@ -26,7 +26,7 @@ export default function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [interests, setInterests] = useState<string>(() => {
-    return localStorage.getItem('user_interests') || 'AI, Web開発, ガジェット, 最新テクノロジー';
+    return localStorage.getItem('user_interests') || '料理, レシピ, グルメ';
   });
 
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => {
@@ -61,25 +61,44 @@ export default function App() {
     }
 
     setLoading(true);
-    setStatusMessage('最新技術ニュースを取得中...');
+    setStatusMessage(`「${interests}」の最新ニュースを検索中...`);
 
     try {
-      // 1. Qiita公式APIから最新の人気記事を取得（CORSブロックなし・超安定）
+      // 1. Googleニュースから「ユーザーの関心ワード」でリアルタイム検索
       let articles: FeedItem[] = [];
+      const searchQuery = encodeURIComponent(interests.replace(/,/g, ' OR '));
+      const googleNewsUrl = `https://news.google.com/rss/search?q=${searchQuery}&hl=ja&gl=JP&ceid=JP:ja`;
+      
       try {
+        const proxyRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(googleNewsUrl)}`);
+        const proxyData = await proxyRes.json();
+        
+        // XMLをパースして記事を取り出す
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(proxyData.contents, "text/xml");
+        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 15);
+
+        articles = items.map(item => ({
+          title: item.querySelector("title")?.textContent || "",
+          link: item.querySelector("link")?.textContent || "",
+          source: 'Googleニュース'
+        }));
+      } catch (e) {
+        console.warn('Googleニュースの取得に失敗、代替ニュースを取得します');
+      }
+
+      // もしGoogleニュースが取れなかった場合のフォールバック（Qiita）
+      if (articles.length === 0) {
         const res = await fetch('https://qiita.com/api/v2/items?page=1&per_page=15');
-        if (!res.ok) throw new Error('Qiita APIエラー');
         const data = await res.json();
         articles = data.map((item: any) => ({
           title: item.title,
           link: item.url,
-          source: 'Qiita Trend'
+          source: '技術トレンド'
         }));
-      } catch (e) {
-        throw new Error('ニュースの取得に失敗しました。電波環境を確認してください。');
       }
 
-      setStatusMessage('AIコンシェルジュがあなた向けに選定中...');
+      setStatusMessage('AIコンシェルジュが厳選中...');
 
       // 2. Gemini API を呼び出し
       const bookmarkSummaries = bookmarks.slice(0, 5).map(b => b.title).join(', ');
@@ -87,9 +106,9 @@ export default function App() {
 
       const prompt = `
 あなたは専属のAIニュースコンシェルジュです。
-以下の【ユーザーの関心】と【最近のブックマーク】を参考に、【最新ニュース一覧】の中からユーザーに最もおすすめな記事を「3件」厳選してください。
+以下の【ユーザーの関心ワード】と【最近のブックマーク】を参考に、【最新ニュース一覧】の中からユーザーに最もおすすめな記事を「3件」厳選してください。
 
-【ユーザーの関心】
+【ユーザーの関心ワード】
 ${interests}
 
 【最近保存したブックマーク】
@@ -109,21 +128,18 @@ ${articlesText}
 ]
 `;
 
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+      // ユーザーの環境で動いたモデル（3.8など）に合わせて調整可能です
+      const modelName = 'gemini-2.5-flash'; 
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       
-      let aiRes;
-      try {
-        aiRes = await fetch(geminiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
-        });
-      } catch (netErr: any) {
-        throw new Error(`Gemini通信エラー: Googleへの接続が遮断されました (${netErr.message})`);
-      }
+      const aiRes = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
 
       if (!aiRes.ok) {
         const errText = await aiRes.text();
@@ -168,7 +184,7 @@ ${articlesText}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
           <h1 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0, color: '#0f172a' }}>📰 AIニュースコンシェルジュ</h1>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>あなた専用の厳選ニュースポータル</p>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '2px 0 0 0' }}>設定ワード: {interests}</p>
         </div>
         <button
           onClick={() => setShowSettings(!showSettings)}
@@ -198,7 +214,7 @@ ${articlesText}
               type="text"
               defaultValue={interests}
               id="interestsInput"
-              placeholder="例: AI, TypeScript, ガジェット, 投資"
+              placeholder="例: 料理, カフェ, サッカー, AI"
               style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', boxSizing: 'border-box' }}
             />
           </div>
@@ -241,7 +257,7 @@ ${articlesText}
       {recommendations.length > 0 && (
         <section style={{ marginBottom: '30px' }}>
           <h2 style={{ fontSize: '16px', fontWeight: 'bold', margin: '0 0 12px 0' }}>
-            🎯 コンシェルジュのおすすめ（3選）
+            🎯 「{interests}」のおすすめ（3選）
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {recommendations.map((item, idx) => (
@@ -250,17 +266,14 @@ ${articlesText}
                   {item.title}
                 </a>
                 
-                {/* 推薦理由 */}
                 <div style={{ backgroundColor: '#eff6ff', padding: '8px 10px', borderRadius: '6px', fontSize: '13px', color: '#1e40af', marginBottom: '8px' }}>
                   💡 <strong>おすすめ理由:</strong> {item.reason}
                 </div>
 
-                {/* 要約 */}
                 <p style={{ fontSize: '13px', color: '#475569', margin: '0 0 12px 0', lineHeight: '1.5' }}>
                   📝 {item.summary}
                 </p>
 
-                {/* ボタン */}
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <a
                     href={item.link}
